@@ -73,19 +73,23 @@ def windows(sents, size=3, step=2):
     for i in range(0, max(len(sents), 1), step):
         chunk = sents[i:i + size]
         if chunk:
-            out.append(chunk)
+            out.append((i, chunk))
         if i + size >= len(sents):
             break
     return out
 
 
+SEQS = {}  # source id -> ordered sentences/segments, used for "show more context"
+
+
 def passages_from_sentences(src, sents, loc_fn):
+    SEQS[src["id"]] = [s for s, _ in sents]
     res = []
-    for w in windows(sents):
+    for i0, w in windows(sents):
         quote = " ".join(s for s, _ in w)
         if 120 <= len(quote) <= 900:
             res.append(dict(src=src["id"], text=quote, loc=loc_fn(w[0][1]),
-                            sents=[s for s, _ in w]))
+                            sents=[s for s, _ in w], i0=i0, n=len(w)))
     return res
 
 
@@ -131,14 +135,19 @@ def extract_video(src):
         t = re.sub(r"\[[^\]]*\]", " ", sn.text)  # [Music] etc.
         for w in t.split():
             words.append((w, sn.start))
-    res, size, step = [], 70, 55
-    for i in range(0, len(words), step):
-        chunk = words[i:i + size]
-        if len(chunk) < 30:
+    # 35-word segments; each passage is two consecutive segments (70 words), sliding by one
+    segs = []
+    for i in range(0, len(words), 35):
+        chunk = words[i:i + 35]
+        segs.append((" ".join(w for w, _ in chunk), int(chunk[0][1])))
+    SEQS[src["id"]] = [t for t, _ in segs]
+    res = []
+    for j in range(len(segs) - 1):
+        text = segs[j][0] + " " + segs[j + 1][0]
+        if len(text.split()) < 30:
             break
-        text = " ".join(w for w, _ in chunk)
-        res.append(dict(src=src["id"], text=text, sents=[text],
-                        loc=dict(kind="time", seconds=int(chunk[0][1]))))
+        res.append(dict(src=src["id"], text=text, sents=[text], i0=j, n=2,
+                        loc=dict(kind="time", seconds=segs[j][1])))
     return res
 
 
@@ -187,7 +196,7 @@ def main():
             m["url"] = f"https://www.youtube.com/watch?v={s['video_id']}"
         meta.append(m)
     (OUT / "passages.json").write_text(
-        json.dumps(dict(sources=meta, passages=all_passages), ensure_ascii=False, separators=(",", ":")),
+        json.dumps(dict(sources=meta, passages=all_passages, seqs=SEQS), ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8")
     print("\n".join(report))
     print(f"\n{len(all_passages)} passages from {len(SOURCES) - len(skipped)}/{len(SOURCES)} sources")

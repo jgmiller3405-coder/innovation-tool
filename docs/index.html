@@ -36,6 +36,8 @@
   .guide { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:4px 12px; font-size:15px; }
   .guide p { margin:8px 0; }
   .plan ol { margin:6px 0; padding-left:20px; }
+  .about { font-size:14px; margin:10px 0 0; }
+  details.ctx { margin-top:10px; } details.ctx p { margin:8px 0; font-size:15px; }
   #status { color:var(--mute); margin-top:16px; }
 </style>
 </head>
@@ -106,7 +108,7 @@ function trimQuote(p, qset){
   const a = hit.indexOf(true), b = hit.lastIndexOf(true);
   if (a<0) return p;
   const sents = p.sents.slice(a, b+1);
-  return {...p, sents, text: p.loc.kind==="time" ? p.text : sents.join(" ")};
+  return {...p, sents, i0: p.i0+a, n: b-a+1, text: p.loc.kind==="time" ? p.text : sents.join(" ")};
 }
 
 const GENERIC = new Set("affect create work use make need includ involv lead result get give cause help show chang mean happen".split(" ").map(stem));
@@ -122,6 +124,15 @@ const KIND = {
   guidance:         {label:"Consumer guidance",  step:4, use:"Useful for practical risks and warnings aimed at the public."}
 };
 const STEP_NAME = ["background and definitions","overview of the research","mechanism or reasoning","evidence","current context and implications"];
+
+// Neighbouring sentences from the same source, shown verbatim around the quote.
+function ctxHtml(p, qset){
+  const seq = DATA.seqs[p.src]||[], e = p.i0+p.n;
+  const before = seq.slice(Math.max(0,p.i0-3), p.i0).join(" "), after = seq.slice(e, e+3).join(" ");
+  if (!before && !after) return "";
+  return `<details class="ctx"><summary>Show more context</summary><p>${esc(before)} <b>${hl(p.text,qset)}</b> ${esc(after)}</p>
+    <div class="note">Bold text is the quote. Surrounding sentences come from the same source; tables, references and similar fragments are left out.</div></details>`;
+}
 
 function guideQuestion(query){
   const w = (query.toLowerCase().match(/[a-z]+/)||[""])[0];
@@ -183,6 +194,8 @@ function run(){
       <blockquote>“${hl(p.text,qset)}”</blockquote>
       <div class="cite">${cite(p)}</div>
       ${s.type==="video"?'<div class="note">Auto-generated transcript; wording may contain captioning errors.</div>':""}
+      ${s.about?`<p class="about"><b>About this source:</b> ${esc(s.about)}</p>`:""}
+      ${ctxHtml(p,qset)}
       <h3>Talking points from this source</h3>
       ${pts.length?`<ul class="points">${pts.map(c=>`<li>${hl(c.sent,qset)} <span class="cite">(${loc(c.p,s)})</span></li>`).join("")}</ul>`:'<p class="note">No other sentences in this source match your prompt.</p>'}
       <h3>How to use this</h3>
