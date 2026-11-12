@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Innovation Tool</title>
+<style>
+  :root { --bg:#fafaf8; --card:#fff; --ink:#1d1f23; --mute:#5f6670; --line:#e3e3df; --accent:#1f5eff; --mark:#fff2a8; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --card:#1c1f25; --ink:#e8eaee; --mute:#9aa2ad; --line:#2d323b; --accent:#7aa2ff; --mark:#5a4d00; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width:780px; margin:0 auto; padding:32px 16px 64px; }
+  h1 { font-size:28px; margin:0 0 4px; }
+  .sub { color:var(--mute); margin:0 0 20px; }
+  form { display:flex; gap:8px; }
+  textarea { flex:1; min-height:76px; padding:12px; font:inherit; color:inherit; background:var(--card);
+             border:1px solid var(--line); border-radius:8px; resize:vertical; }
+  button { padding:0 20px; font:inherit; font-weight:600; color:#fff; background:var(--accent); border:0; border-radius:8px; cursor:pointer; }
+  @media (prefers-color-scheme: dark) { button { color:#0b0d11; } }
+  h2 { font-size:15px; text-transform:uppercase; letter-spacing:.06em; color:var(--mute); margin:32px 0 10px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:12px; }
+  blockquote { margin:0 0 8px; padding-left:12px; border-left:3px solid var(--accent); }
+  mark { background:var(--mark); color:inherit; border-radius:2px; padding:0 1px; }
+  .cite { font-size:14px; color:var(--mute); }
+  .cite b { color:var(--ink); font-weight:600; }
+  .tag { display:inline-block; font-size:12px; padding:1px 7px; margin-right:6px; border:1px solid var(--line); border-radius:99px; }
+  a { color:var(--accent); }
+  ul.points { padding-left:20px; margin:0; } ul.points li { margin-bottom:12px; }
+  .note { font-size:13px; color:var(--mute); margin-top:6px; }
+  details { margin-top:36px; } summary { cursor:pointer; color:var(--mute); }
+  details li { margin:6px 0; font-size:14px; }
+  h3 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--mute); margin:16px 0 6px; }
+  .qn { font-size:12px; font-weight:700; color:var(--accent); margin-bottom:4px; }
+  .guide { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:4px 12px; font-size:15px; }
+  .guide p { margin:8px 0; }
+  .plan ol { margin:6px 0; padding-left:20px; }
+  #status { color:var(--mute); margin-top:16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Innovation Tool</h1>
+  <p class="sub">Enter a prompt. You get verbatim quotes, each with talking points from the same source and a short guide to using it. Nothing is generated.</p>
+  <form id="f">
+    <textarea id="q" placeholder="e.g. How do stablecoins affect financial stability?" autofocus></textarea>
+    <button type="submit">Search</button>
+  </form>
+  <div id="status">Loading sources…</div>
+  <div id="out"></div>
+  <details id="srcs"><summary>Sources included</summary><ul id="srclist"></ul></details>
+</main>
+<script>
+"use strict";
+const STOP = new Set(("a about above after again against all also am an and any are as at be because been before being below between both but by can could did do does doing down during each few for from further had has have having he her here hers him his how i if in into is it its just may me more most my no nor not of off on once only or other our out over own same she should so some such than that the their them then there these they this those through to too under until up us very was we were what when where which while who whom why will with would you your").split(" "));
+const stem = w => w.length>4 ? w.replace(/(ies)$/,"y").replace(/(ing|ed|es|s)$/,"") : w;
+const tok = s => (s.toLowerCase().match(/[a-z0-9]+/g)||[]).filter(w=>!STOP.has(w)&&w.length>1).map(stem);
+
+let DATA, SRC = {}, bySrc = {}, N, avgdl, df = new Map(), tfs = [], lens = [];
+const K1 = 1.4, B = 0.75;
+
+fetch("passages.json").then(r=>r.json()).then(d=>{
+  DATA = d; d.sources.forEach(s=>SRC[s.id]=s);
+  N = d.passages.length; let tot = 0;
+  d.passages.forEach(p=>{
+    const t = tok(p.text), m = new Map();
+    t.forEach(w=>m.set(w,(m.get(w)||0)+1));
+    m.forEach((_,w)=>df.set(w,(df.get(w)||0)+1));
+    tfs.push(m); lens.push(t.length); tot += t.length;
+    (bySrc[p.src] = bySrc[p.src]||[]).push(p.id);
+  });
+  avgdl = tot/N;
+  document.getElementById("status").textContent = `${d.sources.length} sources · ${N.toLocaleString()} passages indexed.`;
+  document.getElementById("srclist").innerHTML = d.sources.map(s=>`<li>${esc(authors(s))}${s.year?` (${s.year})`:""}. <i>${esc(s.title)}</i>. ${esc(s.venue||"")} <span class="tag">${s.type}</span></li>`).join("");
+  const p = new URLSearchParams(location.search).get("q"); if (p) { q.value = p; run(); }
+}).catch(e=>{ document.getElementById("status").textContent = "Could not load passages.json ("+e+"). If opening the file directly, serve it over http (see README)."; });
+
+const idf = w => { const n = df.get(w)||0; return Math.log(1+(N-n+.5)/(n+.5)); };
+function bm25(qt, i) {
+  const m = tfs[i]; let s = 0, hit = 0;
+  for (const w of qt) { const f = m.get(w); if (!f) continue; hit++;
+    s += idf(w)*f*(K1+1)/(f+K1*(1-B+B*lens[i]/avgdl)); }
+  return s*(0.6+0.4*hit/qt.length);          // reward covering more of the query terms
+}
+function esc(s){ return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function authors(s){ return s.authors.join(", ").replace(/, ([^,]+)$/, s.authors.length>2?", and $1":" and $1"); }
+function hl(text, qset){
+  return esc(text).replace(/[A-Za-z0-9]+/g, w => qset.has(stem(w.toLowerCase())) ? `<mark>${w}</mark>` : w);
+}
+function loc(p, s){
+  if (p.loc.kind==="page") return `PDF p. ${p.loc.page}`;
+  if (p.loc.kind==="time") { const t=p.loc.seconds, m=Math.floor(t/60), sec=String(t%60).padStart(2,"0");
+    return `<a href="${s.url}&t=${t}s" target="_blank" rel="noopener">${m}:${sec}</a>`; }
+  return `<a href="${s.url}" target="_blank" rel="noopener">link</a>`;
+}
+function cite(p){
+  const s = SRC[p.src];
+  const title = s.type==="article" ? `<a href="${s.url}" target="_blank" rel="noopener">${esc(s.title)}</a>` : esc(s.title);
+  return `<span class="tag">${s.type}</span><b>${esc(authors(s))}</b>${s.year?` (${s.year})`:""}. <i>${title}</i>. ${esc(s.venue||"")}${s.type==="paper"||s.type==="video"?", "+loc(p,s):""}`;
+}
+
+// Drop leading/trailing sentences that share no terms with the prompt (text stays verbatim).
+function trimQuote(p, qset){
+  const hit = p.sents.map(s=>tok(s).some(w=>qset.has(w)));
+  const a = hit.indexOf(true), b = hit.lastIndexOf(true);
+  if (a<0) return p;
+  const sents = p.sents.slice(a, b+1);
+  return {...p, sents, text: p.loc.kind==="time" ? p.text : sents.join(" ")};
+}
+
+const GENERIC = new Set("affect create work use make need includ involv lead result get give cause help show chang mean happen".split(" ").map(stem));
+
+// What each kind of source is good for (fixed text, not generated).
+const KIND = {
+  empirical:        {label:"Empirical research", step:3, use:"Cite it as evidence: say what was measured and what it found."},
+  theory:           {label:"Economic theory",    step:2, use:"Use it to explain why something happens (the logic), not to show how large an effect is."},
+  theory_empirical: {label:"Model plus data",    step:2, use:"Use the model for the logic and the data for evidence that it holds in practice."},
+  review:           {label:"Literature review",  step:1, use:"Use it for the big picture and for how researchers frame the issue."},
+  explainer:        {label:"Explainer",          step:0, use:"Good for definitions and background mechanics; back up claims with research before relying on it."},
+  report:           {label:"Institutional or industry report", step:4, use:"Use it for current facts, trends and policy views, and note who produced it and their perspective."},
+  guidance:         {label:"Consumer guidance",  step:4, use:"Useful for practical risks and warnings aimed at the public."}
+};
+const STEP_NAME = ["background and definitions","overview of the research","mechanism or reasoning","evidence","current context and implications"];
+
+function guideQuestion(query){
+  const w = (query.toLowerCase().match(/[a-z]+/)||[""])[0];
+  if (w==="how") return "What mechanism or sequence of steps does this describe, and which step answers your prompt?";
+  if (w==="why") return "Does this give a cause or a motive, and is it backed by data or only by argument?";
+  if (w==="what"||w==="which") return "Does this define, list or quantify something your answer needs? What is the key fact to take from it?";
+  if (w==="should"||w==="is"||w==="are"||w==="does"||w==="do"||w==="can") return "Does this support a yes or a no? What would someone who disagrees point to?";
+  if (w==="compare"||w==="difference") return "Which side of the comparison does this describe, and what is the matching point from another source?";
+  return "Which part of your prompt does this support, and what would a counterpoint look like?";
+}
+
+// Other sentences from the same source that also match the prompt (skipping ones near the quote).
+function pointsFor(quote, qt, n){
+  const s = SRC[quote.src], isVid = s.type==="video", max = isVid?450:320;
+  const used = new Set(quote.sents), picked = [], cand = [];
+  for (const i of bySrc[quote.src]){ const pp = DATA.passages[i];
+    for (const sent of pp.sents){ if (sent.length>max || used.has(sent)) continue;
+      const st = new Set(tok(sent)); let sc = 0; qt.forEach(w=>{ if (st.has(w)) sc += idf(w); });
+      let m = 0; qt.forEach(w=>{ if (st.has(w)) m++; });
+      if (sc>0) cand.push({sc:sc/Math.sqrt(st.size+4), m, sent, p:pp}); } }
+  cand.sort((a,b)=>b.sc-a.sc);
+  const near = (a,b)=> a.loc.kind==="time" ? Math.abs(a.loc.seconds-b.loc.seconds)<90 : false;
+  // First prefer sentences matching 2+ prompt terms; then fill with single-term matches.
+  for (const need of [Math.min(2, qt.length), 1]){
+    for (const c of cand){
+      if (picked.length===n) break;
+      if (c.m<need || picked.some(x=>x.sent===c.sent || near(x.p,c.p)) || near(quote,c.p)) continue;
+      picked.push(c); } }
+  return picked;
+}
+
+function run(){
+  const query = q.value.trim(); if (!query) return;
+  const qt = [...new Set(tok(query))], qset = new Set(qt);
+  const out = document.getElementById("out");
+  if (!qt.length) { out.innerHTML = '<p class="note">Try a longer prompt with more specific words.</p>'; return; }
+  const orig = {}; (query.toLowerCase().match(/[a-z0-9]+/g)||[]).forEach(w=>{ const st=stem(w); if(!STOP.has(w)&&!(st in orig)) orig[st]=w; });
+
+  const ranked = [];
+  for (let i=0;i<N;i++){ const s=bm25(qt,i); if (s>0) ranked.push([s,i]); }
+  ranked.sort((a,b)=>b[0]-a[0]);
+  if (!ranked.length) { out.innerHTML = '<p class="note">No matching passages. Try different wording.</p>'; return; }
+
+  // Quotes: best passage per source, up to 4 (diverse sources)
+  const quotes = [], seen = new Set();
+  for (const [s,i] of ranked){ const p = DATA.passages[i]; if (seen.has(p.src)) continue;
+    seen.add(p.src); quotes.push(trimQuote(p, qset)); if (quotes.length===4) break; }
+
+  const gq = guideQuestion(query);
+  const cards = quotes.map((p,k)=>{
+    const s = SRC[p.src], kind = KIND[s.kind]||KIND.explainer;
+    const qtoks = new Set(tok(p.text));
+    const key = qt.filter(w=>!GENERIC.has(w));   // ignore generic verbs like "affect" or "create"
+    const covered = key.filter(w=>qtoks.has(w)).map(w=>orig[w]||w);
+    const missing = key.filter(w=>!qtoks.has(w)).map(w=>orig[w]||w);
+    const pts = pointsFor(p, qt, 3);
+    return `<div class="card">
+      <div class="qn">Quote ${k+1}</div>
+      <blockquote>“${hl(p.text,qset)}”</blockquote>
+      <div class="cite">${cite(p)}</div>
+      ${s.type==="video"?'<div class="note">Auto-generated transcript; wording may contain captioning errors.</div>':""}
+      <h3>Talking points from this source</h3>
+      ${pts.length?`<ul class="points">${pts.map(c=>`<li>${hl(c.sent,qset)} <span class="cite">(${loc(c.p,s)})</span></li>`).join("")}</ul>`:'<p class="note">No other sentences in this source match your prompt.</p>'}
+      <h3>How to use this</h3>
+      <div class="guide">
+        <p><b>${kind.label}.</b> ${kind.use}</p>
+        <p><b>Speaks to:</b> ${covered.length?esc(covered.join(", ")):"none of your key terms directly"}.${missing.length?` <b>Not covered here:</b> ${esc(missing.join(", "))}, so look to another quote for ${missing.length>1?"those":"that"}.`:""}</p>
+        <p><b>Ask yourself:</b> ${esc(gq)}</p>
+      </div></div>`;
+  });
+
+  const order = quotes.map((p,k)=>({k, step:(KIND[SRC[p.src].kind]||KIND.explainer).step}))
+                      .sort((a,b)=>a.step-b.step||a.k-b.k);
+  const plan = `<div class="card plan"><h3 style="margin-top:0">A way to build your answer</h3><ol>` +
+    order.map(o=>`<li>Quote ${o.k+1}: ${STEP_NAME[o.step]} (${esc(authors(SRC[quotes[o.k].src]))})</li>`).join("") +
+    `</ol><p class="note">Order is based only on each source's type: definitions first, then reasoning, then evidence, then current context.</p></div>`;
+
+  out.innerHTML = `<h2>Quotes, talking points and guidance</h2>` + plan + cards.join("");
+}
+
+document.getElementById("f").addEventListener("submit", e=>{ e.preventDefault(); run(); });
+document.getElementById("q").addEventListener("keydown", e=>{ if (e.key==="Enter" && (e.ctrlKey||e.metaKey)) { e.preventDefault(); run(); } });
+const q = document.getElementById("q");
+</script>
+</body>
+</html>
